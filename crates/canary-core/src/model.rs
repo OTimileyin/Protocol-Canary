@@ -85,6 +85,30 @@ pub struct CompatibilityResult {
 }
 
 impl CompatibilityResult {
+    /// Whether this single result should fail a run: `true` for
+    /// [`Status::Fail`] and [`Status::Error`], `false` otherwise.
+    ///
+    /// This is public API for external consumers of `canary-core` that
+    /// inspect individual results. The CLI does not call it: its run-level
+    /// decision uses `canary_runner::ResultSummary::has_required_failure`,
+    /// which applies the same `Fail`/`Error` rule to summary counts. Keep
+    /// the two in sync if either rule changes.
+    ///
+    /// ```
+    /// use canary_core::{CompatibilityResult, ProtocolVersion, Status, Surface};
+    ///
+    /// let result = CompatibilityResult {
+    ///     test_id: "t1".into(),
+    ///     protocol: ProtocolVersion(28),
+    ///     surface: Surface::Xdr,
+    ///     status: Status::Error,
+    ///     summary: "rpc timeout".into(),
+    ///     details: None,
+    ///     duration_ms: 1,
+    ///     fixture_id: None,
+    /// };
+    /// assert!(result.is_required_failure());
+    /// ```
     pub fn is_required_failure(&self) -> bool {
         matches!(self.status, Status::Fail | Status::Error)
     }
@@ -244,10 +268,12 @@ impl FixtureStore {
         self.fixtures.is_empty()
     }
 
+    /// Currently unused outside this crate's tests.
     pub fn by_id(&self, id: &str) -> Option<&FixtureMetadata> {
         self.fixtures.iter().find(|f| f.id == id)
     }
 
+    /// Currently unused outside this crate's tests.
     pub fn for_surface(&self, surface: Surface) -> impl Iterator<Item = &FixtureMetadata> {
         self.fixtures.iter().filter(move |f| f.surface == surface)
     }
@@ -262,10 +288,11 @@ impl FixtureStore {
 
 /// The set of fixtures known for a given protocol version.
 ///
-/// This is the seam that lets a new protocol version be added as data
-/// rather than as new branches scattered through the engine: adding
-/// `protocol-29` means constructing a new `ProtocolPack`, not editing the
-/// `protocol-28` one.
+/// **Currently unused:** nothing constructs a `ProtocolPack`. Which fixtures
+/// apply to a run is decided per fixture by `canary_runner::build_plan`,
+/// which compares each fixture's `protocol` metadata against the run's
+/// target protocol, so adding a protocol version means adding fixtures that
+/// declare it (see `CONTRIBUTING.md`, "Adding a new protocol pack").
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProtocolPack {
     pub version: ProtocolVersion,
