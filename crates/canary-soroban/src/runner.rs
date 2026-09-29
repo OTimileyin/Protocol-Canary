@@ -13,8 +13,27 @@ use canary_rpc::RpcClient;
 use crate::builder::{build_invoke_transaction_envelope, BuilderError, InvocationSpec, ScValInput};
 use crate::simulation::simulate;
 
+/// Errors raised while turning a [`LoadedFixture`] into a [`SorobanFixture`].
+///
+/// One failure mode today: the fixture body is structurally valid TOML but
+/// does not describe a usable Soroban invocation. That covers a missing or
+/// mistyped required field (`source_account`, `contract_id`, `function`,
+/// `sequence_number`), an `[[args]]` entry whose `kind` this crate does not
+/// support or whose `value` does not match that `kind`, and an `[expect]`
+/// table that is absent or declares an unknown expectation.
+///
+/// The error names the offending fixture (`source_path`) and carries a
+/// human-readable `reason`, and converts into `CanaryError::Soroban` so it
+/// propagates through the shared error type without ever failing a run as an
+/// unhandled panic. Returned by [`SorobanFixture::from_loaded`]; constructing
+/// a [`SorobanFixture`] never panics on malformed input.
 #[derive(Debug, thiserror::Error)]
 pub enum SorobanFixtureError {
+    /// The fixture's body could not be parsed into a [`SorobanFixture`].
+    ///
+    /// `source_path` is the path the fixture was loaded from (used to point
+    /// the user at the file to fix) and `reason` explains which field or
+    /// assertion was rejected.
     #[error("invalid soroban fixture body in {source_path}: {reason}")]
     InvalidFixtureBody {
         source_path: std::path::PathBuf,
@@ -436,6 +455,68 @@ mod tests {
         assert_eq!(result.status, Status::Pass);
     }
 
+    #[tokio::test]
+    async fn fails_when_simulation_unexpectedly_succeeds() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "result": { "latestLedger": 1000, "transactionData": "AAAA" }
+            })))
+            .mount(&server)
+            .await;
+
+        let fixture =
+            SorobanFixture::from_loaded(&fixture("p28-soroban-4", "simulation-error", "")).unwrap();
+        let runner = DefaultSorobanRunner::new(HttpRpcClient::new(server.uri()));
+        let result = runner.run(&fixture, &context()).await.unwrap();
+        assert_eq!(result.status, Status::Fail);
+        assert_eq!(
+            result.summary,
+            "expected simulation to fail, but it succeeded"
+        );
+    }
+
+    #[tokio::test]
+    async fn fails_when_simulation_error_does_not_match_expected_substring() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "result": { "latestLedger": 1000, "error": "Error(Budget, ExceededLimit)" }
+            })))
+            .mount(&server)
+            .await;
+
+        let fixture = SorobanFixture::from_loaded(&fixture(
+            "p28-soroban-5",
+            "simulation-error",
+            "message_contains = \"Contract\"\n",
+        ))
+        .unwrap();
+        let runner = DefaultSorobanRunner::new(HttpRpcClient::new(server.uri()));
+        let result = runner.run(&fixture, &context()).await.unwrap();
+        assert_eq!(result.status, Status::Fail);
+    }
+
+    #[tokio::test]
+    async fn a_transport_failure_produces_an_error_status_not_a_fail() {
+        // Port 0 on loopback has no listener, so the simulateTransaction
+        // POST fails at the transport level before any JSON-RPC exchange.
+        let runner = DefaultSorobanRunner::new(HttpRpcClient::new("http://127.0.0.1:0"));
+        let fixture =
+            SorobanFixture::from_loaded(&fixture("p28-soroban-6", "simulation-success", ""))
+                .unwrap();
+        let result = runner.run(&fixture, &context()).await.unwrap();
+        assert_eq!(result.status, Status::Error);
+        assert_eq!(result.summary, "failed to call simulateTransaction");
+        assert!(result.details.is_some());
+    }
+
     #[test]
     fn rejects_a_fixture_missing_the_expect_table() {
         let toml = format!(
@@ -449,6 +530,48 @@ mod tests {
         assert!(matches!(
             err,
             SorobanFixtureError::InvalidFixtureBody { .. }
+        ));
+    }
+
+    /// Parses a fixture whose single `[[args]]` entry has the given
+    /// `kind` and raw TOML `value`.
+    fn from_loaded_with_arg(
+        kind: &str,
+        value: &str,
+    ) -> Result<SorobanFixture, SorobanFixtureError> {
+        let toml = format!(
+            "id = \"bad-arg\"\nprotocol = 28\nsurface = \"soroban\"\ncategory = \"x\"\ndescription = \"x\"\nsource_account = \"{}\"\ncontract_id = \"{}\"\nfunction = \"f\"\nsequence_number = 1\n\n[[args]]\nkind = \"{kind}\"\nvalue = {value}\n\n[expect]\nkind = \"simulation-success\"\n",
+            StrkeyPublicKey([0u8; 32]),
+            StrkeyContract([0u8; 32]),
+        );
+        let loaded =
+            canary_fixtures::parse_fixture_str(&toml, std::path::Path::new("t.toml")).unwrap();
+        SorobanFixture::from_loaded(&loaded)
+    }
+
+    #[test]
+    fn rejects_a_negative_u32_arg() {
+        let err = from_loaded_with_arg("u32", "-1").unwrap_err();
+        assert!(matches!(
+            err,
+            SorobanFixtureError::InvalidFixtureBody { .. }
+        ));
+    }
+
+    #[test]
+    fn rejects_a_string_value_for_a_bool_arg() {
+        let err = from_loaded_with_arg("bool", "\"true\"").unwrap_err();
+        assert!(matches!(
+            err,
+            SorobanFixtureError::InvalidFixtureBody { .. }
+        ));
+    }
+
+    #[test]
+    fn rejects_an_unsupported_arg_kind_and_lists_the_supported_ones() {
+        let err = from_loaded_with_arg("map", "1").unwrap_err();
+        assert!(err.to_string().contains(
+            "expected one of \"bool\", \"u32\", \"i32\", \"u64\", \"i64\", \"symbol\", \"string\""
         ));
     }
 }
