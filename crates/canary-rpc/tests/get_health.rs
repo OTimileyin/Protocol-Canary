@@ -129,6 +129,42 @@ async fn get_health_parses_full_stellar_rpc_response() {
 }
 
 #[tokio::test]
+async fn get_health_preserves_degraded_status_and_sync_diagnostics() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "result": {
+                "status": "degraded",
+                "latestLedger": 1_234_567,
+                "oldestLedger": 1_113_608,
+                "ledgerRetentionWindow": 120_960,
+                "latestLedgerCloseTime": "1728463080",
+                "oldestLedgerCloseTime": "1727858280"
+            }
+        })))
+        .mount(&server)
+        .await;
+
+    let client = HttpRpcClient::new(server.uri());
+    let response = client.get_health().await.expect("degraded response parses");
+    assert_eq!(response.status, "degraded");
+    assert_eq!(response.latest_ledger, Some(1_234_567));
+    assert_eq!(response.oldest_ledger, Some(1_113_608));
+    assert_eq!(response.ledger_retention_window, Some(120_960));
+    assert_eq!(
+        response.latest_ledger_close_time.as_deref(),
+        Some("1728463080")
+    );
+    assert_eq!(
+        response.oldest_ledger_close_time.as_deref(),
+        Some("1727858280")
+    );
+}
+
+#[tokio::test]
 async fn get_health_maps_method_not_found_and_jsonrpc_errors() {
     let server = MockServer::start().await;
     Mock::given(method("POST"))

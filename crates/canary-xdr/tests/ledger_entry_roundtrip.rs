@@ -99,7 +99,11 @@ fn constructed_contract_code_entry() -> LedgerEntry {
         last_modified_ledger_seq: 300,
         data: LedgerEntryData::ContractCode(ContractCodeEntry {
             ext: ContractCodeEntryExt::V0,
-            hash: Hash([3; 32]),
+            hash: Hash([
+                0x93, 0xa4, 0x4b, 0xbb, 0x96, 0xc7, 0x51, 0x21, 0x8e, 0x4c, 0x00, 0xd4, 0x79,
+                0xe4, 0xc1, 0x43, 0x58, 0x12, 0x2a, 0x38, 0x9a, 0xcc, 0xa1, 0x62, 0x05, 0xb1,
+                0xe4, 0xd0, 0xdc, 0x5f, 0x94, 0x76,
+            ]),
             code: BytesM::try_from(vec![0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00])
                 .expect("fits BytesM"),
         }),
@@ -252,6 +256,31 @@ fn a_constructed_temporary_contract_data_entry_roundtrips() {
 #[test]
 fn a_constructed_contract_code_entry_roundtrips() {
     assert_lossless_roundtrip(constructed_contract_code_entry());
+}
+
+#[test]
+fn a_constructed_contract_code_preserves_wasm_and_its_sha256() {
+    let encoded = encode_ledger_entry(&constructed_contract_code_entry()).expect("encodes");
+    let decoded = decode_ledger_entry(&encoded).expect("decodes");
+    let LedgerEntryData::ContractCode(code) = decoded.data else {
+        panic!("expected a ContractCode entry");
+    };
+
+    assert_eq!(
+        code.code,
+        BytesM::try_from(vec![0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00])
+            .expect("fits BytesM"),
+        "the synthetic Wasm header must survive the XDR roundtrip"
+    );
+    assert_eq!(
+        code.hash,
+        Hash([
+            0x93, 0xa4, 0x4b, 0xbb, 0x96, 0xc7, 0x51, 0x21, 0x8e, 0x4c, 0x00, 0xd4, 0x79,
+            0xe4, 0xc1, 0x43, 0x58, 0x12, 0x2a, 0x38, 0x9a, 0xcc, 0xa1, 0x62, 0x05, 0xb1,
+            0xe4, 0xd0, 0xdc, 0x5f, 0x94, 0x76,
+        ]),
+        "the ContractCode hash must match SHA-256 of the synthetic Wasm bytes"
+    );
 }
 
 /// The fixture pipeline goes through `decode`/`encode` with a type name;

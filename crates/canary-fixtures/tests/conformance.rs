@@ -353,6 +353,37 @@ fn every_accepted_vector_loads_and_parses() {
 }
 
 #[test]
+fn a_minimal_fixture_with_omitted_optional_fields_loads_and_parses() {
+    let dir = TempDir::new("canary-minimal-fixture");
+    let path = dir.path.join("minimal.toml");
+    std::fs::write(
+        &path,
+        r#"
+id = "p28-rpc-minimal"
+protocol = 28
+surface = "rpc"
+category = "network"
+description = "minimal fixture"
+method = "get-network"
+
+[[assert]]
+kind = "field-exists"
+field = "passphrase"
+"#,
+    )
+    .expect("write minimal fixture");
+
+    let loaded = load_directory(&dir.path).expect("minimal fixture loads");
+    assert_eq!(loaded.len(), 1);
+    assert_eq!(loaded[0].metadata.id, "p28-rpc-minimal");
+    assert_eq!(loaded[0].metadata.surface, Surface::Rpc);
+    validate(&loaded).expect("minimal fixture passes schema validation");
+    parse_surface(&loaded[0]).unwrap_or_else(|error| {
+        panic!("minimal RPC fixture parses: {}", error.message())
+    });
+}
+
+#[test]
 fn every_rejected_vector_is_rejected_for_the_declared_reason() {
     let manifest = manifest();
     for vector in &manifest.rejected {
